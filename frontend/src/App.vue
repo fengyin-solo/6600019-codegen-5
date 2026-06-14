@@ -4,15 +4,27 @@
     <div class="w-72 bg-gray-900 p-4 flex flex-col gap-3 border-r border-gray-800 overflow-y-auto">
       <h1 class="text-lg font-bold text-cyan-400">地震波形 P/S 波分析</h1>
 
-      <div>
+      <!-- Upload Section -->
+      <div class="space-y-2">
         <label class="block bg-cyan-500 text-black text-center py-2 rounded cursor-pointer hover:bg-cyan-400 text-sm font-medium">
-          上传 SAC/miniSEED
-          <input type="file" @change="onUpload" class="hidden" />
+          批量上传波形
+          <input type="file" @change="onBatchUpload" class="hidden" multiple accept=".sac,.mseed,.miniseed" />
         </label>
+        <button @click="store.generateMockEvents(5)" class="w-full bg-gray-800 py-2 rounded text-sm hover:bg-gray-700">
+          加载批量模拟数据
+        </button>
       </div>
-      <button @click="store.loadMockData()" class="bg-gray-800 py-2 rounded text-sm hover:bg-gray-700">
-        加载模拟数据
-      </button>
+
+      <!-- Current Event Info -->
+      <div v-if="store.currentEvent" class="bg-gray-800 rounded-xl p-3">
+        <h3 class="text-cyan-300 font-bold text-sm mb-2">当前事件</h3>
+        <div class="text-sm">
+          <div class="text-white font-medium">M{{ store.currentEvent.magnitude.toFixed(1) }} {{ store.currentEvent.location }}</div>
+          <div class="text-gray-400 text-xs mt-1">深度 {{ store.currentEvent.depth }}km</div>
+          <div class="text-gray-400 text-xs">{{ formatTime(store.currentEvent.originTime) }}</div>
+          <div class="text-gray-500 text-xs mt-1 truncate">{{ store.currentEvent.filename }}</div>
+        </div>
+      </div>
 
       <!-- STA/LTA Parameters -->
       <div class="bg-gray-800 rounded-xl p-3 space-y-2">
@@ -56,22 +68,41 @@
         </div>
       </div>
 
-      <!-- Events -->
+      <!-- Event List -->
       <div class="bg-gray-800 rounded-xl p-3">
-        <h3 class="text-cyan-300 font-bold text-sm mb-2">地震事件目录</h3>
-        <div v-for="e in store.events" :key="e.id" class="bg-gray-700 rounded p-2 mb-1 text-xs">
-          M{{ e.magnitude }} {{ e.location }}
-          <div class="text-gray-500">深度 {{ e.depth }}km | {{ e.originTime.slice(0, 16) }}</div>
+        <h3 class="text-cyan-300 font-bold text-sm mb-2">
+          事件列表
+          <span v-if="store.eventList.length" class="text-gray-400 font-normal">({{ store.eventList.length }})</span>
+        </h3>
+        <div v-for="e in store.eventList" :key="e.id"
+          @click="onSelectEvent(e.id)"
+          class="bg-gray-700 rounded p-2 mb-1 text-xs cursor-pointer hover:bg-gray-600"
+          :class="store.currentEventId === e.id ? 'ring-1 ring-cyan-400 bg-gray-600' : ''">
+          <div class="flex justify-between items-center">
+            <span class="font-medium">M{{ e.magnitude.toFixed(1) }} {{ e.location }}</span>
+            <span class="text-cyan-400 text-xs">{{ e.pickCount }}个拾取</span>
+          </div>
+          <div class="text-gray-400 mt-1">深度 {{ e.depth }}km | {{ formatTimeShort(e.originTime) }}</div>
+          <div class="text-gray-500 truncate">{{ e.filename }}</div>
         </div>
+        <div v-if="!store.eventList.length" class="text-gray-600 text-xs">批量上传后生成事件列表</div>
       </div>
     </div>
 
     <!-- Main: Waveform Charts -->
     <div class="flex-1 flex flex-col gap-2 p-4 overflow-y-auto">
-      <WaveformChart v-if="store.waveform" />
-      <div v-else class="flex-1 flex items-center justify-center text-gray-600">
-        请上传数据或加载模拟波形
+      <div v-if="store.isLoading" class="flex-1 flex items-center justify-center text-gray-600">
+        <div class="text-center">
+          <div class="animate-pulse mb-2">正在处理数据...</div>
+          <div class="text-xs text-gray-500">请稍候</div>
+        </div>
       </div>
+      <template v-else>
+        <WaveformChart v-if="store.waveform" />
+        <div v-else class="flex-1 flex items-center justify-center text-gray-600">
+          请批量上传数据或加载模拟波形
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -82,12 +113,31 @@ import WaveformChart from './components/WaveformChart.vue'
 
 const store = useSeismicStore()
 
-function onUpload(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  if (file) store.uploadAndAnalyze(file)
+function onBatchUpload(e: Event) {
+  const files = (e.target as HTMLInputElement).files
+  if (files && files.length > 0) {
+    store.batchUploadAndAnalyze(files)
+  }
+}
+
+function onSelectEvent(eventId: string) {
+  store.selectEvent(eventId)
 }
 
 function runPick() {
-  store.picks = store.staLtaPicking()
+  store.runPickOnCurrentEvent()
+}
+
+function formatTime(iso: string): string {
+  try {
+    const d = new Date(iso)
+    return d.toLocaleString('zh-CN', { timeZone: 'UTC' })
+  } catch {
+    return iso.slice(0, 16)
+  }
+}
+
+function formatTimeShort(iso: string): string {
+  return iso.slice(0, 16).replace('T', ' ')
 }
 </script>

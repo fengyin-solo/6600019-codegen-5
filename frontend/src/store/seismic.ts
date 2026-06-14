@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import type { WaveformData, PhasePick, Station, SeismicEvent } from '../types'
+import type { WaveformData, PhasePick, Station, SeismicEvent, EventSummary, EventDetail } from '../types'
 
 export const useSeismicStore = defineStore('seismic', () => {
   const waveform = ref<WaveformData | null>(null)
@@ -16,6 +16,10 @@ export const useSeismicStore = defineStore('seismic', () => {
     { id: '3', magnitude: 5.1, depth: 25.0, originTime: '2025-01-13T02:45:33Z', location: '台湾花莲' },
   ])
 
+  const eventList = ref<EventSummary[]>([])
+  const currentEventId = ref<string | null>(null)
+  const eventDetailMap = ref<Map<string, EventDetail>>(new Map())
+
   const stations = ref<Station[]>([
     { id: 'STA01', name: 'BJI', latitude: 39.9, longitude: 116.4, elevation: 45 },
     { id: 'STA02', name: 'SSE', latitude: 31.2, longitude: 121.5, elevation: 10 },
@@ -23,39 +27,51 @@ export const useSeismicStore = defineStore('seismic', () => {
     { id: 'STA04', name: 'HIA', latitude: 49.3, longitude: 119.7, elevation: 610 },
   ])
 
-  function generateMockWaveform(): WaveformData {
-    const sr = 100  // sampling rate Hz
-    const duration = 60  // seconds
+  const currentEvent = computed(() => {
+    if (!currentEventId.value) return null
+    return eventDetailMap.value.get(currentEventId.value) || null
+  })
+
+  function generateMockWaveform(seed: number = 42): WaveformData {
+    const sr = 100
+    const duration = 60
     const n = sr * duration
     const time = Array.from({ length: n }, (_, i) => i / sr)
     const bhz: number[] = [], bhn: number[] = [], bhe: number[] = []
 
+    let seedVal = seed
+    function random() {
+      seedVal = (seedVal * 9301 + 49297) % 233280
+      return seedVal / 233280
+    }
+
+    const pShift = 5 + random() * 10
+    const sShift = pShift + 10 + random() * 5
+    const pAmp = 0.8 * (0.6 + random() * 0.6)
+    const sAmp = 1.5 * (0.7 + random() * 0.6)
+
     for (let i = 0; i < n; i++) {
       const t = time[i]
-      // Background noise
-      let vz = (Math.random() - 0.5) * 0.02
-      let ns = (Math.random() - 0.5) * 0.02
-      let ew = (Math.random() - 0.5) * 0.02
+      let vz = (random() - 0.5) * 0.02
+      let ns = (random() - 0.5) * 0.02
+      let ew = (random() - 0.5) * 0.02
 
-      // P-wave arrival at t=10s
-      if (t > 10 && t < 18) {
-        const amp = 0.8 * Math.exp(-(t - 12) * (t - 12) / 8)
+      if (t > pShift && t < pShift + 8) {
+        const amp = pAmp * Math.exp(-(t - pShift - 2) * (t - pShift - 2) / 8)
         vz += amp * Math.sin(2 * Math.PI * 8 * t)
         ns += amp * 0.3 * Math.sin(2 * Math.PI * 8 * t + 0.5)
         ew += amp * 0.3 * Math.sin(2 * Math.PI * 8 * t + 1.0)
       }
 
-      // S-wave arrival at t=22s
-      if (t > 22 && t < 40) {
-        const amp = 1.5 * Math.exp(-(t - 28) * (t - 28) / 30)
+      if (t > sShift && t < sShift + 18) {
+        const amp = sAmp * Math.exp(-(t - sShift - 6) * (t - sShift - 6) / 30)
         vz += amp * 0.4 * Math.sin(2 * Math.PI * 4 * t)
         ns += amp * Math.sin(2 * Math.PI * 4 * t + 0.3)
         ew += amp * Math.sin(2 * Math.PI * 4 * t + 0.8)
       }
 
-      // Surface waves at t=35s
-      if (t > 35 && t < 55) {
-        const amp = 2.0 * Math.exp(-(t - 42) * (t - 42) / 50)
+      if (t > sShift + 13 && t < sShift + 33) {
+        const amp = 2.0 * Math.exp(-(t - sShift - 20) * (t - sShift - 20) / 50)
         vz += amp * Math.sin(2 * Math.PI * 1.5 * t)
         ns += amp * Math.sin(2 * Math.PI * 1.5 * t + 0.4)
         ew += amp * Math.sin(2 * Math.PI * 1.5 * t + 0.9)
@@ -70,7 +86,7 @@ export const useSeismicStore = defineStore('seismic', () => {
   }
 
   function loadMockData() {
-    waveform.value = generateMockWaveform()
+    waveform.value = generateMockWaveform(42)
     picks.value = [
       { id: 'p1', type: 'P', time: 10.2, confidence: 0.92, method: 'STA/LTA' },
       { id: 'p2', type: 'S', time: 22.5, confidence: 0.88, method: 'STA/LTA' },
@@ -131,9 +147,130 @@ export const useSeismicStore = defineStore('seismic', () => {
     }
   }
 
+  async function batchUploadAndAnalyze(files: FileList | File[]) {
+    isLoading.value = true
+    try {
+      const formData = new FormData()
+      Array.from(files).forEach(file => {
+        formData.append('files', file)
+      })
+      const resp = await fetch('/api/waveform/batch-upload', { method: 'POST', body: formData })
+      if (resp.ok) {
+        const data = await resp.json()
+        eventList.value = data.events || []
+        if (eventList.value.length > 0) {
+          await selectEvent(eventList.value[0].id)
+        }
+      }
+    } catch {
+      generateMockEvents(5)
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function selectEvent(eventId: string) {
+    if (eventDetailMap.value.has(eventId)) {
+      currentEventId.value = eventId
+      const detail = eventDetailMap.value.get(eventId)!
+      waveform.value = detail.waveform
+      picks.value = detail.picks
+      return
+    }
+    isLoading.value = true
+    try {
+      const resp = await fetch(`/api/waveform/event/${eventId}`)
+      if (resp.ok) {
+        const data = await resp.json()
+        const detail: EventDetail = {
+          id: data.id,
+          magnitude: data.magnitude,
+          depth: data.depth,
+          originTime: data.originTime,
+          location: data.location,
+          waveform: data.waveform,
+          picks: data.picks || [],
+          filename: data.filename || '',
+        }
+        eventDetailMap.value.set(eventId, detail)
+        currentEventId.value = eventId
+        waveform.value = detail.waveform
+        picks.value = detail.picks
+      }
+    } catch {
+      // ignore
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  function generateMockEvents(count: number = 5) {
+    const locations = ['四川雅安', '云南大理', '台湾花莲', '新疆和田', '青海玉树', '甘肃定西']
+    const newEvents: EventSummary[] = []
+
+    for (let i = 0; i < count; i++) {
+      const id = `evt_mock_${i}_${Date.now()}_${Math.floor(Math.random() * 1000)}`
+      const seed = i * 100 + 7
+      const wf = generateMockWaveform(seed)
+      const pPickTime = 5 + (Math.sin(seed * 0.1) + 1) * 5
+      const sPickTime = pPickTime + 10 + (Math.cos(seed * 0.15) + 1) * 2.5
+      const eventPicks: PhasePick[] = [
+        { id: `${id}_p`, type: 'P', time: Math.round(pPickTime * 100) / 100, confidence: 0.85 + Math.random() * 0.1, method: 'STA/LTA' },
+        { id: `${id}_s`, type: 'S', time: Math.round(sPickTime * 100) / 100, confidence: 0.8 + Math.random() * 0.1, method: 'STA/LTA' },
+      ]
+      const magnitude = Math.round((3 + Math.random() * 3) * 10) / 10
+      const depth = Math.round((5 + Math.random() * 30) * 10) / 10
+      const now = new Date()
+      const originTime = new Date(now.getTime() - Math.random() * 72 * 3600 * 1000).toISOString()
+      const location = locations[i % locations.length]
+      const filename = `mock_${i}.sac`
+
+      const detail: EventDetail = {
+        id,
+        magnitude,
+        depth,
+        originTime,
+        location,
+        waveform: wf,
+        picks: eventPicks,
+        filename,
+      }
+      eventDetailMap.value.set(id, detail)
+      newEvents.push({
+        id,
+        magnitude,
+        depth,
+        originTime,
+        location,
+        filename,
+        pickCount: eventPicks.length,
+      })
+    }
+
+    eventList.value = newEvents
+    if (newEvents.length > 0) {
+      const first = newEvents[0]
+      currentEventId.value = first.id
+      const d = eventDetailMap.value.get(first.id)!
+      waveform.value = d.waveform
+      picks.value = d.picks
+    }
+  }
+
+  function runPickOnCurrentEvent() {
+    if (!waveform.value) return
+    const newPicks = staLtaPicking()
+    picks.value = newPicks
+    if (currentEventId.value && eventDetailMap.value.has(currentEventId.value)) {
+      const detail = eventDetailMap.value.get(currentEventId.value)!
+      detail.picks = newPicks
+    }
+  }
+
   return {
     waveform, picks, selectedStation, staWindow, ltaWindow, threshold,
-    isLoading, events, stations,
-    loadMockData, staLtaPicking, uploadAndAnalyze, generateMockWaveform
+    isLoading, events, stations, eventList, currentEventId, currentEvent,
+    loadMockData, staLtaPicking, uploadAndAnalyze, batchUploadAndAnalyze,
+    generateMockWaveform, selectEvent, generateMockEvents, runPickOnCurrentEvent
   }
 })

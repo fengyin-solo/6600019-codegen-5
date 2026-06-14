@@ -1,8 +1,8 @@
 export interface WaveformData {
   time: number[]
-  bhz: number[]  // vertical component
-  bhn: number[]  // north component
-  bhe: number[]  // east component
+  bhz: number[]
+  bhn: number[]
+  bhe: number[]
   samplingRate: number
 }
 
@@ -28,4 +28,20 @@ export interface SeismicEvent {
   depth: number
   originTime: string
   location: string
+}
+
+export interface EventSummary {
+  id: string
+  magnitude: number
+  depth: number
+  originTime: string
+  location: string
+  filename: string
+  pickCount: number
+}
+
+export interface EventDetail extends SeismicEvent {
+  waveform: WaveformData
+  picks: PhasePick[]
+  filename: string
 }
