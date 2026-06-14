@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import { defineStore } from 'pinia'
 import type { WaveformData, PhasePick, Station, SeismicEvent, EventSummary, EventDetail } from '../types'
 
@@ -18,7 +18,7 @@ export const useSeismicStore = defineStore('seismic', () => {
 
   const eventList = ref<EventSummary[]>([])
   const currentEventId = ref<string | null>(null)
-  const eventDetailMap = ref<Map<string, EventDetail>>(new Map())
+  const eventDetails = reactive<Record<string, EventDetail>>({})
 
   const stations = ref<Station[]>([
     { id: 'STA01', name: 'BJI', latitude: 39.9, longitude: 116.4, elevation: 45 },
@@ -27,9 +27,9 @@ export const useSeismicStore = defineStore('seismic', () => {
     { id: 'STA04', name: 'HIA', latitude: 49.3, longitude: 119.7, elevation: 610 },
   ])
 
-  const currentEvent = computed(() => {
+  const currentEvent = computed<EventDetail | null>(() => {
     if (!currentEventId.value) return null
-    return eventDetailMap.value.get(currentEventId.value) || null
+    return eventDetails[currentEventId.value] || null
   })
 
   function generateMockWaveform(seed: number = 42): WaveformData {
@@ -129,6 +129,18 @@ export const useSeismicStore = defineStore('seismic', () => {
     return newPicks
   }
 
+  function applyEventDetail(detail: EventDetail) {
+    currentEventId.value = detail.id
+    waveform.value = {
+      time: [...detail.waveform.time],
+      bhz: [...detail.waveform.bhz],
+      bhn: [...detail.waveform.bhn],
+      bhe: [...detail.waveform.bhe],
+      samplingRate: detail.waveform.samplingRate,
+    }
+    picks.value = detail.picks.map(p => ({ ...p }))
+  }
+
   async function uploadAndAnalyze(file: File) {
     isLoading.value = true
     try {
@@ -158,6 +170,7 @@ export const useSeismicStore = defineStore('seismic', () => {
       if (resp.ok) {
         const data = await resp.json()
         eventList.value = data.events || []
+        Object.keys(eventDetails).forEach(k => { delete eventDetails[k] })
         if (eventList.value.length > 0) {
           await selectEvent(eventList.value[0].id)
         }
@@ -170,11 +183,8 @@ export const useSeismicStore = defineStore('seismic', () => {
   }
 
   async function selectEvent(eventId: string) {
-    if (eventDetailMap.value.has(eventId)) {
-      currentEventId.value = eventId
-      const detail = eventDetailMap.value.get(eventId)!
-      waveform.value = detail.waveform
-      picks.value = detail.picks
+    if (eventDetails[eventId]) {
+      applyEventDetail(eventDetails[eventId])
       return
     }
     isLoading.value = true
@@ -192,13 +202,11 @@ export const useSeismicStore = defineStore('seismic', () => {
           picks: data.picks || [],
           filename: data.filename || '',
         }
-        eventDetailMap.value.set(eventId, detail)
-        currentEventId.value = eventId
-        waveform.value = detail.waveform
-        picks.value = detail.picks
+        eventDetails[eventId] = detail
+        applyEventDetail(detail)
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('Failed to load event:', err)
     } finally {
       isLoading.value = false
     }
@@ -207,6 +215,8 @@ export const useSeismicStore = defineStore('seismic', () => {
   function generateMockEvents(count: number = 5) {
     const locations = ['四川雅安', '云南大理', '台湾花莲', '新疆和田', '青海玉树', '甘肃定西']
     const newEvents: EventSummary[] = []
+
+    Object.keys(eventDetails).forEach(k => { delete eventDetails[k] })
 
     for (let i = 0; i < count; i++) {
       const id = `evt_mock_${i}_${Date.now()}_${Math.floor(Math.random() * 1000)}`
@@ -235,7 +245,7 @@ export const useSeismicStore = defineStore('seismic', () => {
         picks: eventPicks,
         filename,
       }
-      eventDetailMap.value.set(id, detail)
+      eventDetails[id] = detail
       newEvents.push({
         id,
         magnitude,
@@ -249,11 +259,7 @@ export const useSeismicStore = defineStore('seismic', () => {
 
     eventList.value = newEvents
     if (newEvents.length > 0) {
-      const first = newEvents[0]
-      currentEventId.value = first.id
-      const d = eventDetailMap.value.get(first.id)!
-      waveform.value = d.waveform
-      picks.value = d.picks
+      applyEventDetail(eventDetails[newEvents[0].id])
     }
   }
 
@@ -261,9 +267,10 @@ export const useSeismicStore = defineStore('seismic', () => {
     if (!waveform.value) return
     const newPicks = staLtaPicking()
     picks.value = newPicks
-    if (currentEventId.value && eventDetailMap.value.has(currentEventId.value)) {
-      const detail = eventDetailMap.value.get(currentEventId.value)!
-      detail.picks = newPicks
+    if (currentEventId.value && eventDetails[currentEventId.value]) {
+      eventDetails[currentEventId.value].picks = newPicks.map(p => ({ ...p }))
+      const ev = eventList.value.find(e => e.id === currentEventId.value)
+      if (ev) ev.pickCount = newPicks.length
     }
   }
 
